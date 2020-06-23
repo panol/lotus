@@ -37,6 +37,7 @@ type StorageMiner interface {
 
 	SectorsUpdate(context.Context, abi.SectorNumber, SectorState) error
 	SectorRemove(context.Context, abi.SectorNumber) error
+	SectorSeal(context.Context, abi.SectorNumber) error
 
 	StorageList(ctx context.Context) (map[stores.ID][]stores.Decl, error)
 	StorageLocal(ctx context.Context) (map[stores.ID]string, error)
