@@ -62,7 +62,7 @@ var runCmd = &cli.Command{
 		},
 		&cli.IntFlag{
 			Name:  "max-batch",
-			Value: 1000,
+			Value: 100,
 		},
 	},
 	Action: func(cctx *cli.Context) error {

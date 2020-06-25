@@ -5,11 +5,15 @@ import (
 	"container/list"
 	"context"
 	"encoding/json"
-	"math"
-	"sync"
-
+	"fmt"
 	"github.com/filecoin-project/specs-actors/actors/builtin"
 	"github.com/filecoin-project/specs-actors/actors/builtin/miner"
+	"github.com/filecoin-project/specs-actors/actors/builtin/power"
+	"github.com/filecoin-project/specs-actors/actors/util/adt"
+	cbg "github.com/whyrusleeping/cbor-gen"
+	"math"
+	"sync"
+	"time"
 
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/specs-actors/actors/abi"
@@ -60,9 +64,27 @@ type minerInfo struct {
 	state miner.State
 	info  miner.MinerInfo
 
-	power big.Int
-	ssize uint64
-	psize uint64
+	rawPower big.Int
+	qalPower big.Int
+	ssize    uint64
+	psize    uint64
+}
+
+type newMinerInfo struct {
+	// common
+	addr      address.Address
+	act       types.Actor
+	stateroot cid.Cid
+
+	// miner specific
+	state miner.State
+	info  miner.MinerInfo
+
+	// tracked by power actor
+	rawPower big.Int
+	qalPower big.Int
+	ssize    uint64
+	psize    uint64
 }
 
 type actorInfo struct {
@@ -138,7 +160,8 @@ func syncHead(ctx context.Context, api api.FullNode, st *storage, headTs *types.
 			delete(allToSync, c)
 		}
 
-		log.Infof("Syncing %d blocks", len(toSync))
+		log.Infow("Starting Sync", "numBlocks", len(toSync), "maxBatch", maxBatch)
+		tipToState := make(map[types.TipSetKey]cid.Cid)
 
 		paDone := 0
 		parmap.Par(50, parmap.MapArr(toSync), func(bh *types.BlockHeader) {
@@ -155,6 +178,8 @@ func syncHead(ctx context.Context, api api.FullNode, st *storage, headTs *types.
 					return
 				}
 
+				// TODO suspicious there is not a lot to be gained by doing this in parallel since the genesis state
+				// is unlikely to contain a lot of actors, why not for loop here?
 				parmap.Par(50, aadrs, func(addr address.Address) {
 					act, err := api.StateGetActor(ctx, addr, genesisTs.Key())
 					if err != nil {
@@ -183,6 +208,7 @@ func syncHead(ctx context.Context, api api.FullNode, st *storage, headTs *types.
 						state:     string(state),
 					}
 					addressToID[addr] = address.Undef
+					tipToState[genesisTs.Key()] = bh.ParentStateRoot
 					alk.Unlock()
 				})
 
@@ -195,6 +221,7 @@ func syncHead(ctx context.Context, api api.FullNode, st *storage, headTs *types.
 				return
 			}
 
+			// TODO I'm pretty sure this is returning deleted actors as well..
 			changes, err := api.StateChangedActors(ctx, pts.ParentState(), bh.ParentStateRoot)
 			if err != nil {
 				log.Error(err)
@@ -227,15 +254,20 @@ func syncHead(ctx context.Context, api api.FullNode, st *storage, headTs *types.
 				if !ok {
 					actors[addr] = map[types.Actor]actorInfo{}
 				}
+				// a change occurred for the actor with address `addr` and state `act` at tipset `pts`.
 				actors[addr][act] = actorInfo{
 					stateroot: bh.ParentStateRoot,
 					state:     string(state),
 					tsKey:     pts.Key(),
 				}
 				addressToID[addr] = address.Undef
+				// processing tipset `pts` produced stateroot `bh.ParentStateRoot`
+				tipToState[pts.Key()] = bh.ParentStateRoot
 				alk.Unlock()
 			}
 		})
+
+		log.Infow("Sync Complete", "numTipSets", len(tipToState))
 
 		log.Infof("Getting messages")
 
@@ -265,11 +297,36 @@ func syncHead(ctx context.Context, api api.FullNode, st *storage, headTs *types.
 
 		miners := map[minerKey]*minerInfo{}
 
+		minerTips := make(map[types.TipSetKey][]*newMinerInfo)
+
+		headsSeen := make(map[cid.Cid]bool)
+
+		minerChanges := 0
 		for addr, m := range actors {
 			for actor, c := range m {
 				if actor.Code != builtin.StorageMinerActorCodeID {
 					continue
 				}
+
+				// only want miner actors with head change events
+				if headsSeen[actor.Head] {
+					continue
+				}
+				minerChanges++
+
+				minerTips[c.tsKey] = append(minerTips[c.tsKey], &newMinerInfo{
+					addr:      addr,
+					act:       actor,
+					stateroot: c.stateroot,
+
+					state: miner.State{},
+					info:  miner.MinerInfo{},
+
+					rawPower: big.Zero(),
+					qalPower: big.Zero(),
+					ssize:    0,
+					psize:    0,
+				})
 
 				miners[minerKey{
 					addr:      addr,
@@ -277,43 +334,85 @@ func syncHead(ctx context.Context, api api.FullNode, st *storage, headTs *types.
 					stateroot: c.stateroot,
 					tsKey:     c.tsKey,
 				}] = &minerInfo{}
+				headsSeen[actor.Head] = true
 			}
 		}
 
-		parmap.Par(50, parmap.KVMapArr(miners), func(it func() (minerKey, *minerInfo)) {
-			k, info := it()
+		minerProcessingState := time.Now()
+		log.Infow("Processing miners", "numTips", len(minerTips), "numMinerChanges", minerChanges)
+		parmap.Par(50, parmap.KVMapArr(minerTips), func(it func() (types.TipSetKey, []*newMinerInfo)) {
+			tsKey, minerInfo := it()
 
-			// TODO: get the storage power actors state and and pull the miner power from there, currently this hits the
-			// storage power actor once for each miner for each tipset, we can do better by just getting it for each tipset
-			// and reading each miner power from the result.
-			pow, err := api.StateMinerPower(ctx, k.addr, k.tsKey)
-			if err != nil {
-				log.Error(err)
-				// Not sure why this would fail, but its probably worth continuing
-			}
-			info.power = pow.MinerPower.QualityAdjPower
-
-			sszs, err := api.StateMinerSectorCount(ctx, k.addr, k.tsKey)
+			//
+			// Get miner raw and quality power
+			//
+			mp, err := getPowerActorClaimsMap(ctx, api, tsKey)
 			if err != nil {
 				log.Error(err)
 				return
 			}
-			info.psize = sszs.Pset
-			info.ssize = sszs.Sset
+			log.Debugw("populating miner info", "tipset", tsKey.String(), "numMiners", len(minerInfo))
+			for _, mi := range minerInfo {
+				err := mp.ForEach(nil, func(key string) error {
+					addr, err := address.NewFromBytes([]byte(key))
+					if err != nil {
+						return err
+					}
+					var claim power.Claim
+					keyerAddr := adt.AddrKey(addr)
+					found, err := mp.Get(keyerAddr, &claim)
+					if err != nil {
+						return err
+					}
+					// means the miner didn't have a claim at this stateroot
+					if !found {
+						return nil
+					}
 
-			astb, err := api.ChainReadObj(ctx, k.act.Head)
-			if err != nil {
-				log.Error(err)
-				return
+					if claim.QualityAdjPower.Int64() == 0 {
+						return nil
+					}
+
+					mi.rawPower = claim.RawBytePower
+					mi.qalPower = claim.QualityAdjPower
+					return nil
+				})
+				if err != nil {
+					log.Error(err)
+				}
+
+				//
+				// Get the miner state info
+				//
+				astb, err := api.ChainReadObj(ctx, mi.act.Head)
+				if err != nil {
+					log.Error(err)
+					return
+				}
+				if err := mi.state.UnmarshalCBOR(bytes.NewReader(astb)); err != nil {
+					log.Error(err)
+					return
+				}
+				mi.info = mi.state.Info
 			}
 
-			if err := info.state.UnmarshalCBOR(bytes.NewReader(astb)); err != nil {
-				log.Error(err)
-				return
-			}
-
-			info.info = info.state.Info
+			//
+			// Get the Sector Count
+			//
+			// TODO modfiy api to return ErrNotFound for the case that a miner is not found since that is an expected case..
+			/*
+				sszs, err := api.StateMinerSectorCount(ctx, k.addr, k.tsKey)
+				if err != nil {
+					info.psize = 0
+					info.ssize = 0
+				} else {
+					info.psize = sszs.Pset
+					info.ssize = sszs.Sset
+				}
+			*/
+			// TODO fix the above code, right now tis slow and fails to find sectors for many miners
 		})
+		log.Infow("Completed Miner Processing", "duration", time.Since(minerProcessingState).String())
 
 		log.Info("Getting receipts")
 
@@ -343,6 +442,13 @@ func syncHead(ctx context.Context, api api.FullNode, st *storage, headTs *types.
 		log.Info("Storing miners")
 
 		if err := st.storeMiners(miners); err != nil {
+			log.Error(err)
+			return
+		}
+
+		log.Info("Storing miner sectors")
+
+		if err := st.storeSectors(minerTips, api); err != nil {
 			log.Error(err)
 			return
 		}
@@ -462,4 +568,57 @@ func fetchParentReceipts(ctx context.Context, api api.FullNode, toSync map[cid.C
 	})
 
 	return out
+}
+
+// load the power actor state clam as an adt.Map at the tipset `ts`.
+func getPowerActorClaimsMap(ctx context.Context, api api.FullNode, ts types.TipSetKey) (*adt.Map, error) {
+	powerActor, err := api.StateGetActor(ctx, builtin.StoragePowerActorAddr, ts)
+	if err != nil {
+		return nil, err
+	}
+
+	powerRaw, err := api.ChainReadObj(ctx, powerActor.Head)
+	if err != nil {
+		return nil, err
+	}
+
+	var powerActorState power.State
+	if err := powerActorState.UnmarshalCBOR(bytes.NewReader(powerRaw)); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal power actor state: %w", err)
+	}
+
+	s := &apiIpldStore{ctx, api}
+	return adt.AsMap(s, powerActorState.Claims)
+}
+
+// require for AMT and HAMT access
+// TODO extract this to a common locaiton in lotus and reuse the code
+type apiIpldStore struct {
+	ctx context.Context
+	api api.FullNode
+}
+
+func (ht *apiIpldStore) Context() context.Context {
+	return ht.ctx
+}
+
+func (ht *apiIpldStore) Get(ctx context.Context, c cid.Cid, out interface{}) error {
+	raw, err := ht.api.ChainReadObj(ctx, c)
+	if err != nil {
+		return err
+	}
+
+	cu, ok := out.(cbg.CBORUnmarshaler)
+	if ok {
+		if err := cu.UnmarshalCBOR(bytes.NewReader(raw)); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	return fmt.Errorf("Object does not implement CBORUnmarshaler")
+}
+
+func (ht *apiIpldStore) Put(ctx context.Context, v interface{}) (cid.Cid, error) {
+	return cid.Undef, fmt.Errorf("Put is not implemented on apiIpldStore")
 }
