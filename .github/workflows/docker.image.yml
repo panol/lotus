@@ -6,16 +6,9 @@ on:
       - interopnet
 
 jobs:
-
   build:
-
     runs-on: ubuntu-latest
-
     steps:
-      - name: ls -l
-        run: ls -l
-      - name: go buid
-        run: make all
       - name: Build and push Docker images
         uses: docker/build-push-action@v1.1.0
         with:
