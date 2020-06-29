@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name echo
+      - name: echo
         run: echo ls -l
       - name: go buid
         run: make all
