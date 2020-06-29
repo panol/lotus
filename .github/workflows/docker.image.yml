@@ -13,8 +13,7 @@ jobs:
 
     steps:
       - name: go buid
-        echo: ls -l
-        run: make clean && make all
+        run: echo ls -l && make clean && make all
       - name: Build and push Docker images
         uses: docker/build-push-action@v1.1.0
         with:
