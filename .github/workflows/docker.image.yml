@@ -12,8 +12,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: echo
-        run: echo ls -l
+      - name: ls -l
+        run: ls -l
       - name: go buid
         run: make all
       - name: Build and push Docker images
