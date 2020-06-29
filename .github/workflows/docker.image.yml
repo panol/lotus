@@ -12,8 +12,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name echo
+        run: echo ls -l
       - name: go buid
-        run: echo ls -l && make clean && make all
+        run: make all
       - name: Build and push Docker images
         uses: docker/build-push-action@v1.1.0
         with:
