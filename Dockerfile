@@ -3,7 +3,7 @@ WORKDIR /
 RUN pacman -Syu --noconfirm opencl-icd-loader
 RUN pacman -S --noconfirm base-devel
 RUN pacman -Syu --noconfirm go gcc git bzr jq pkg-config opencl-icd-loader opencl-headers
-COPY . .
+COPY .github/workflows .
 RUN make clean && make all
 # This file is a template, and might need editing before it works on your project.
 
