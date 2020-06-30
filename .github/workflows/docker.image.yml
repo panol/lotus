@@ -13,7 +13,7 @@ jobs:
         with:
           ref: 'interop.6.16.0'
       - name: Create Dockrefile
-        uses: echo 'test' >> ./Dockerfile
+        run: echo 'test' >> ./Dockerfile
       - name: Login Registry
         run: docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }} ${{ secrets.DOCKER_REGISTRY}}
       - name: Build and tag Docker images
