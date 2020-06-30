@@ -2,7 +2,7 @@ FROM archlinux:latest as builder
 RUN pacman -Syu --noconfirm opencl-icd-loader
 RUN pacman -S --noconfirm base-devel
 RUN pacman -Syu --noconfirm go gcc git bzr jq pkg-config opencl-icd-loader opencl-headers
-COPY lotus/ /lotus
+COPY . /lotus/
 WORKDIR /lotus
 RUN make clean && make all
 
