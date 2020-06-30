@@ -13,19 +13,19 @@ jobs:
         with:
           - ref: 'interop.6.16.0'
       - name: Create Dockerfile
-        run: echo 'FROM archlinux:latest as builder
-          RUN pacman -Syu --noconfirm opencl-icd-loader
-          RUN pacman -S --noconfirm base-devel
-          RUN pacman -Syu --noconfirm go gcc git bzr jq pkg-config opencl-icd-loader opencl-headers
-          COPY . /lotus/
-          WORKDIR /lotus
-          RUN make clean && make all
-# This file is a template, and might need editing before it works on your project.
-FROM registry.cn-zhangjiakou.aliyuncs.com/wela/lotus:base
+        run: echo 'FROM archlinux:latest as builder\n\
+          RUN pacman -Syu --noconfirm opencl-icd-loader\n\
+          RUN pacman -S --noconfirm base-devel\n\
+          RUN pacman -Syu --noconfirm go gcc git bzr jq pkg-config opencl-icd-loader opencl-headers\n\
+          COPY . /lotus/\n\
+          WORKDIR /lotus\n\
+          RUN make clean && make all\n\
+# This file is a template, and might need editing before it works on your project.\n\
+FROM registry.cn-zhangjiakou.aliyuncs.com/wela/lotus:base\n\
 
-          COPY --from=builder /lotus/lotus   /usr/local/bin/
-          COPY --from=builder /lotus/lotus-storage-miner  /usr/local/bin/
-          COPY --from=builder /lotus/lotus-seal-worker /usr/local/bin/
+          COPY --from=builder /lotus/lotus   /usr/local/bin/\n\
+          COPY --from=builder /lotus/lotus-storage-miner  /usr/local/bin/\n\
+          COPY --from=builder /lotus/lotus-seal-worker /usr/local/bin/\n\
           WORKDIR /lotus' >> Dockerfile
       - name: Login Registry
         run: docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }} ${{ secrets.DOCKER_REGISTRY}}
