@@ -88,8 +88,12 @@ func PreSeal(maddr address.Address, spt abi.RegisteredSealProof, offset abi.Sect
 			return nil, nil, xerrors.Errorf("commit: %w", err)
 		}
 
-		if err := sb.FinalizeSector(context.TODO(), sid); err != nil {
+		if err := sb.FinalizeSector(context.TODO(), sid, nil); err != nil {
 			return nil, nil, xerrors.Errorf("trim cache: %w", err)
+		}
+
+		if err := cleanupUnsealed(sbfs, sid); err != nil {
+			return nil, nil, xerrors.Errorf("remove unsealed file: %w", err)
 		}
 
 		log.Warn("PreCommitOutput: ", sid, cids.Sealed, cids.Unsealed)
@@ -159,6 +163,16 @@ func PreSeal(maddr address.Address, spt abi.RegisteredSealProof, offset abi.Sect
 	}
 
 	return miner, &minerAddr.KeyInfo, nil
+}
+
+func cleanupUnsealed(sbfs *basicfs.Provider, sid abi.SectorID) error {
+	paths, done, err := sbfs.AcquireSector(context.TODO(), sid, stores.FTUnsealed, stores.FTNone, stores.PathSealing)
+	if err != nil {
+		return err
+	}
+	defer done()
+
+	return os.Remove(paths.Unsealed)
 }
 
 func WriteGenesisMiner(maddr address.Address, sbroot string, gm *genesis.Miner, key *types.KeyInfo) error {
